@@ -2,9 +2,9 @@
 
 Небольшой детерминированный модуль интерполяции строк для Go с поддержкой Windows- и POSIX-синтаксиса переменных.
 
-`winterpolate` является изолированным слоем интерполяции. Он не знает, откуда берутся значения переменных, и самостоятельно не обращается к переменным окружения процесса.
+`winterpolate` является изолированным слоем интерполяции. Он не знает, откуда берутся значения переменных, и самостоятельно не обращается к окружению процесса.
 
-Значения передаются через небольшой интерфейс:
+Для разрешения переменных используется небольшой интерфейс:
 
 ```go
 type Env interface {
@@ -12,7 +12,7 @@ type Env interface {
 }
 ```
 
-Благодаря этому модуль можно использовать для переменных окружения, конфигурации приложения, runtime-контекстов, иерархий переменных и любых других источников.
+Пакет предоставляет готовые реализации `Env` для `map[string]string` и срезов переменных в формате `key=value`, а также позволяет использовать собственные источники переменных.
 
 ---
 
@@ -29,7 +29,10 @@ type Env interface {
 * смешивание Windows- и POSIX-синтаксиса
 * `strict mode` для контроля неизвестных переменных
 * по умолчанию `strict mode` выключен
-* отсутствие прямого доступа к `os.Environ` и `os.Getenv`
+* `NewMapEnv` для переменных в виде `map[string]string`
+* `NewSliceEnv` для переменных в формате `key=value`
+* возможность напрямую использовать `os.Environ()`
+* отсутствие автоматического доступа к окружению процесса
 * отсутствие рекурсивной интерполяции
 * ровно один проход на каждый вызов `Interpolate`
 * детерминированное поведение
@@ -48,6 +51,8 @@ go get github.com/tstruct/winterpolate
 
 ## Базовое использование
 
+Самый простой способ передать переменные — использовать `NewMapEnv`:
+
 ```go
 package main
 
@@ -57,23 +62,14 @@ import (
 	"github.com/tstruct/winterpolate"
 )
 
-type mapEnv map[string]string
-
-func (e mapEnv) Get(key string) (string, bool) {
-	value, ok := e[key]
-	return value, ok
-}
-
 func main() {
-	env := mapEnv{
+	env := winterpolate.NewMapEnv(map[string]string{
 		"USER": "runner",
-	}
+	})
 
 	interpolator := winterpolate.New(env)
 
-	result, err := interpolator.Interpolate(
-		`Hello $USER!`,
-	)
+	result, err := interpolator.Interpolate(`Hello $USER!`)
 	if err != nil {
 		panic(err)
 	}
@@ -82,6 +78,94 @@ func main() {
 	// Hello runner!
 }
 ```
+
+---
+
+## `NewMapEnv`
+
+`NewMapEnv` создаёт `Env` из `map[string]string`.
+
+```go
+env := winterpolate.NewMapEnv(map[string]string{
+	"USER":     "runner",
+	"DRIVE":    "C:",
+	"BASE_DIR": `${DRIVE}\Program Files`,
+})
+```
+
+Особенно удобно использовать его для:
+
+* конфигурации приложения
+* runtime-переменных
+* тестов
+* собственных контекстов переменных
+
+Переданная map не изменяется.
+
+---
+
+## `NewSliceEnv`
+
+`NewSliceEnv` создаёт `Env` из строк в формате переменных окружения:
+
+```text
+KEY=value
+```
+
+Например:
+
+```go
+env := winterpolate.NewSliceEnv([]string{
+	"USER=runner",
+	"DRIVE=C:",
+	"HOME=C:\\Users\\runner",
+})
+```
+
+Его можно напрямую использовать вместе с `os.Environ()`:
+
+```go
+env := winterpolate.NewSliceEnv(os.Environ())
+
+interpolator := winterpolate.New(env)
+```
+
+Таким образом, доступ к системному окружению остаётся за вызывающим слоем, а сам движок интерполяции не зависит от `os`.
+
+`NewSliceEnv` разделяет строку только по первому символу `=`. Поэтому значение может само содержать `=`:
+
+```text
+TOKEN=foo=bar
+```
+
+будет разобрано как:
+
+```text
+key:   TOKEN
+value: foo=bar
+```
+
+Строки без `=` игнорируются.
+
+---
+
+## Регистрозависимость имён переменных
+
+Поведение имён переменных соответствует текущей операционной системе.
+
+В Windows имена переменных окружения регистронезависимы:
+
+```text
+%USERPROFILE%
+%UserProfile%
+%userprofile%
+```
+
+обозначают одну и ту же переменную.
+
+`NewMapEnv` и `NewSliceEnv` используют такую же нормализацию.
+
+В Unix-подобных системах регистр сохраняется, и имена переменных являются регистрозависимыми.
 
 ---
 
@@ -103,15 +187,16 @@ Hello $USER
 Hello ${USER}
 ```
 
-При:
+при:
 
 ```text
 USER=runner
 ```
 
-обе строки дадут:
+дадут:
 
 ```text
+Hello runner
 Hello runner
 ```
 
@@ -152,9 +237,9 @@ C:\Users\runner\app\log.txt
 Например:
 
 ```go
-env := mapEnv{
+env := winterpolate.NewMapEnv(map[string]string{
 	"USER": "runner",
-}
+})
 
 interpolator := winterpolate.New(env)
 
@@ -169,7 +254,7 @@ result, err := interpolator.Interpolate(
 C:\Users\runner\app\log.txt
 ```
 
-Это особенно важно для Windows-путей и аргументов командной строки.
+Это особенно важно при интерполяции Windows-путей и аргументов исполняемых файлов.
 
 ---
 
@@ -180,12 +265,14 @@ C:\Users\runner\app\log.txt
 Например:
 
 ```go
-env := mapEnv{
+env := winterpolate.NewMapEnv(map[string]string{
 	"USER":     "runner",
 	"DRIVE":    "C:",
 	"BASE_DIR": `${DRIVE}\Program Files`,
 	"LOG_FILE": `${BASE_DIR}\logs\${USER}.log`,
-}
+})
+
+interpolator := winterpolate.New(env)
 ```
 
 Один вызов:
@@ -231,11 +318,13 @@ C:\Program Files\logs\runner.log
 По умолчанию неизвестные переменные заменяются пустой строкой.
 
 ```go
+env := winterpolate.NewMapEnv(map[string]string{
+	"USER": "runner",
+})
+
 interpolator := winterpolate.New(env)
 
-result, err := interpolator.Interpolate(
-	`Hello $UNKNOWN`,
-)
+result, err := interpolator.Interpolate(`Hello $UNKNOWN`)
 ```
 
 Результат:
@@ -273,11 +362,11 @@ ${UNKNOWN}
 
 ---
 
-## Источник значений переменных
+## Собственная реализация `Env`
 
-`winterpolate` не читает переменные окружения самостоятельно.
+Использование `NewMapEnv` и `NewSliceEnv` не является обязательным.
 
-Используется интерфейс:
+Любой тип, реализующий:
 
 ```go
 type Env interface {
@@ -285,56 +374,49 @@ type Env interface {
 }
 ```
 
+может быть передан интерполятору.
+
 Например:
 
 ```go
-type mapEnv map[string]string
+type runtimeEnv struct {
+	values map[string]string
+}
 
-func (e mapEnv) Get(key string) (string, bool) {
-	value, ok := e[key]
+func (e runtimeEnv) Get(key string) (string, bool) {
+	value, ok := e.values[key]
 	return value, ok
 }
 ```
 
-Это позволяет использовать один и тот же интерполятор с:
+Это позволяет получать переменные из:
 
-* переменными окружения процесса
-* конфигурацией приложения
-* runtime-переменными
-* иерархическими контекстами
-* тестовыми данными
-* пользовательскими источниками переменных
+* переменных окружения процесса
+* конфигурации приложения
+* runtime-контекстов
+* иерархических контекстов переменных
+* провайдеров конфигурации
+* тестовых данных
+* любых пользовательских источников
 
-Сам слой интерполяции не обязан знать, откуда пришло значение.
+Слой интерполяции при этом не знает, откуда пришло значение.
 
 ---
 
 ## Переменные окружения процесса
 
-Если приложению необходимо раскрывать реальные переменные окружения ОС, это должно делаться слоем выше `winterpolate`.
-
-Например:
+Если приложению необходимо раскрывать реальные переменные окружения ОС, это можно сделать явно:
 
 ```go
-type osEnv struct{}
-
-func (osEnv) Get(key string) (string, bool) {
-	value, ok := os.LookupEnv(key)
-	return value, ok
-}
+env := winterpolate.NewSliceEnv(os.Environ())
+interpolator := winterpolate.New(env)
 ```
 
-После чего:
-
-```go
-interpolator := winterpolate.New(osEnv{})
-```
-
-Главный принцип:
+Ключевой принцип:
 
 > `winterpolate` отвечает за интерполяцию. Вызывающий слой отвечает за источник значений переменных.
 
-Это позволяет объединять системные переменные окружения с переменными, специфичными для приложения.
+Сам пакет не вызывает `os.Getenv` и не читает `os.Environ`.
 
 ---
 
@@ -357,7 +439,7 @@ cmd := exec.Command(
 %USERPROFILE%\app\log.txt
 ```
 
-Наличие `USERPROFILE` в environment процесса не означает, что `%USERPROFILE%` будет автоматически раскрыт внутри каждого аргумента.
+Наличие `USERPROFILE` в environment процесса не означает, что `%USERPROFILE%` автоматически будет раскрыт внутри каждого аргумента.
 
 Поэтому если конфигурация приложения содержит:
 
@@ -373,7 +455,21 @@ cmd := exec.Command(
 C:\Users\runner\app\log.txt
 ```
 
-Именно этот этап и выполняет `winterpolate`.
+Например:
+
+```go
+env := winterpolate.NewSliceEnv(os.Environ())
+interpolator := winterpolate.New(env)
+
+logPath, err := interpolator.Interpolate(
+	`%USERPROFILE%\app\log.txt`,
+)
+if err != nil {
+	return err
+}
+
+cmd := exec.Command("myapp.exe", logPath)
+```
 
 ---
 
@@ -396,7 +492,7 @@ C:\Users\runner\app\log.txt
 %USER
 ```
 
-не являются корректными `%VAR%`-выражениями и остаются без изменений.
+не являются корректными `%VAR%`-выражениями.
 
 Конструкции вида:
 
@@ -404,7 +500,7 @@ C:\Users\runner\app\log.txt
 $(echo hello)
 ```
 
-также не интерпретируются как POSIX-переменные.
+не интерпретируются как POSIX-переменные.
 
 При этом действительно некорректные начатые выражения, например:
 
@@ -461,7 +557,7 @@ $UNKNOWN
 
 ### Он не делает
 
-* не читает системное окружение самостоятельно
+* не читает системное окружение автоматически
 * не раскрывает переменные рекурсивно
 * не выполняет shell-команды
 * не запускает процессы
@@ -483,6 +579,8 @@ $UNKNOWN
 * смешанный синтаксис
 * Windows-пути
 * обратные слеши вокруг переменных
+* `NewMapEnv`
+* `NewSliceEnv`
 * отсутствующие переменные
 * strict mode
 * некорректные выражения
@@ -509,4 +607,6 @@ go test -v ./...
 
 ## Лицензия
 
-См. лицензию репозитория.
+Copyright (c) 2026
+
+Этот проект распространяется по лицензии MIT. Подробные условия приведены в файле [LICENSE](LICENSE).

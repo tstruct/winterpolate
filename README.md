@@ -1,8 +1,8 @@
 # winterpolate
 
-A small, deterministic string interpolation module for Go with support for both Windows-style and POSIX-style environment variables.
+A small, deterministic string interpolation module for Go with support for both Windows-style and POSIX-style variables.
 
-`winterpolate` is designed as an isolated interpolation layer. It does not know where variable values come from and does not access the process environment itself.
+`winterpolate` is designed as an isolated interpolation layer. It does not know where variable values come from and does not access the process environment by itself.
 
 Variable resolution is provided through a small interface:
 
@@ -12,7 +12,7 @@ type Env interface {
 }
 ```
 
-This makes the package suitable for resolving variables from environment variables, configuration files, runtime contexts, variable hierarchies, or any other source.
+The package provides ready-to-use `Env` implementations for maps and environment-style `key=value` slices, while still allowing applications to provide their own variable sources.
 
 ---
 
@@ -29,12 +29,15 @@ This makes the package suitable for resolving variables from environment variabl
 * Mixed Windows/POSIX variable syntax in the same string
 * Strict mode for detecting unknown variables
 * Non-strict mode by default
-* No access to `os.Environ` or `os.Getenv`
+* `NewMapEnv` for map-based variables
+* `NewSliceEnv` for `key=value` environment-style variables
+* Can be used directly with `os.Environ()`
+* No direct access to the process environment
 * No recursive interpolation
 * One interpolation pass per `Interpolate` call
 * Deterministic behavior
 * Small `Env` interface
-* Designed to be used as a building block for higher-level variable resolution
+* Suitable as a building block for higher-level variable resolution
 
 ---
 
@@ -48,6 +51,8 @@ go get github.com/tstruct/winterpolate
 
 ## Basic usage
 
+The simplest way to provide variables is `NewMapEnv`:
+
 ```go
 package main
 
@@ -57,23 +62,14 @@ import (
 	"github.com/tstruct/winterpolate"
 )
 
-type mapEnv map[string]string
-
-func (e mapEnv) Get(key string) (string, bool) {
-	value, ok := e[key]
-	return value, ok
-}
-
 func main() {
-	env := mapEnv{
+	env := winterpolate.NewMapEnv(map[string]string{
 		"USER": "runner",
-	}
+	})
 
 	interpolator := winterpolate.New(env)
 
-	result, err := interpolator.Interpolate(
-		`Hello $USER!`,
-	)
+	result, err := interpolator.Interpolate(`Hello $USER!`)
 	if err != nil {
 		panic(err)
 	}
@@ -82,6 +78,94 @@ func main() {
 	// Hello runner!
 }
 ```
+
+---
+
+## `NewMapEnv`
+
+`NewMapEnv` creates an `Env` from a `map[string]string`.
+
+```go
+env := winterpolate.NewMapEnv(map[string]string{
+	"USER":     "runner",
+	"DRIVE":    "C:",
+	"BASE_DIR": `${DRIVE}\Program Files`,
+})
+```
+
+It is particularly useful for:
+
+* application configuration
+* runtime variables
+* tests
+* custom variable contexts
+
+The map itself is not modified.
+
+---
+
+## `NewSliceEnv`
+
+`NewSliceEnv` creates an `Env` from environment-style strings in the form:
+
+```text
+KEY=value
+```
+
+For example:
+
+```go
+env := winterpolate.NewSliceEnv([]string{
+	"USER=runner",
+	"DRIVE=C:",
+	"HOME=C:\\Users\\runner",
+})
+```
+
+It can be used directly with `os.Environ()`:
+
+```go
+env := winterpolate.NewSliceEnv(os.Environ())
+
+interpolator := winterpolate.New(env)
+```
+
+This keeps access to the operating system environment outside of the interpolation engine itself.
+
+`NewSliceEnv` splits each entry only at the first `=` character, so values may contain `=`:
+
+```text
+TOKEN=foo=bar
+```
+
+is interpreted as:
+
+```text
+key:   TOKEN
+value: foo=bar
+```
+
+Entries without `=` are ignored.
+
+---
+
+## Variable name case sensitivity
+
+Environment variable names follow the behavior of the current operating system.
+
+On Windows, environment variable names are case-insensitive:
+
+```text
+%USERPROFILE%
+%UserProfile%
+%userprofile%
+```
+
+refer to the same variable.
+
+`NewMapEnv` and `NewSliceEnv` apply the same normalization.
+
+On Unix-like systems, variable names remain case-sensitive.
 
 ---
 
@@ -103,15 +187,16 @@ Hello $USER
 Hello ${USER}
 ```
 
-With:
+with:
 
 ```text
 USER=runner
 ```
 
-both produce:
+produces:
 
 ```text
+Hello runner
 Hello runner
 ```
 
@@ -147,14 +232,14 @@ Different syntaxes can be used in the same string:
 
 ## Windows paths
 
-Backslashes are treated as ordinary characters and are not used as an escape character for variables.
+Backslashes are treated as ordinary characters and are not used as escape characters for variables.
 
 For example:
 
 ```go
-env := mapEnv{
+env := winterpolate.NewMapEnv(map[string]string{
 	"USER": "runner",
-}
+})
 
 interpolator := winterpolate.New(env)
 
@@ -169,7 +254,7 @@ The result is:
 C:\Users\runner\app\log.txt
 ```
 
-This is important for Windows command lines and file paths.
+This is important when interpolating Windows file paths and executable arguments.
 
 ---
 
@@ -180,12 +265,14 @@ This is important for Windows command lines and file paths.
 For example:
 
 ```go
-env := mapEnv{
+env := winterpolate.NewMapEnv(map[string]string{
 	"USER":     "runner",
 	"DRIVE":    "C:",
 	"BASE_DIR": `${DRIVE}\Program Files`,
 	"LOG_FILE": `${BASE_DIR}\logs\${USER}.log`,
-}
+})
+
+interpolator := winterpolate.New(env)
 ```
 
 A single call:
@@ -210,7 +297,7 @@ This is intentional.
 
 The interpolation module performs exactly **one pass**. Recursive variable resolution belongs to a higher-level layer.
 
-For example, a higher-level resolver can perform:
+A higher-level resolver can perform:
 
 ```text
 ${LOG_FILE}
@@ -231,11 +318,13 @@ This separation keeps `winterpolate` deterministic and makes recursive resolutio
 By default, unknown variables are replaced with an empty string.
 
 ```go
+env := winterpolate.NewMapEnv(map[string]string{
+	"USER": "runner",
+})
+
 interpolator := winterpolate.New(env)
 
-result, err := interpolator.Interpolate(
-	`Hello $UNKNOWN`,
-)
+result, err := interpolator.Interpolate(`Hello $UNKNOWN`)
 ```
 
 The result is:
@@ -273,11 +362,11 @@ ${UNKNOWN}
 
 ---
 
-## Variable resolution
+## Custom `Env` implementations
 
-`winterpolate` does not read the operating system environment directly.
+Applications are not limited to `NewMapEnv` and `NewSliceEnv`.
 
-The caller provides an implementation of:
+Any type implementing:
 
 ```go
 type Env interface {
@@ -285,23 +374,28 @@ type Env interface {
 }
 ```
 
+can be used.
+
 For example:
 
 ```go
-type mapEnv map[string]string
+type runtimeEnv struct {
+	values map[string]string
+}
 
-func (e mapEnv) Get(key string) (string, bool) {
-	value, ok := e[key]
+func (e runtimeEnv) Get(key string) (string, bool) {
+	value, ok := e.values[key]
 	return value, ok
 }
 ```
 
-This means the same interpolator can work with:
+This allows variables to come from:
 
 * process environment variables
 * application configuration
-* runtime variables
+* runtime contexts
 * hierarchical variable contexts
+* secrets/configuration providers
 * test fixtures
 * custom variable sources
 
@@ -311,30 +405,18 @@ The interpolation layer does not need to know which source is being used.
 
 ## Process environment variables
 
-If the application wants to resolve actual operating system environment variables, that should be implemented by the layer above `winterpolate`.
-
-For example:
+If the application wants to resolve actual operating system environment variables, this can be done explicitly:
 
 ```go
-type osEnv struct{}
-
-func (osEnv) Get(key string) (string, bool) {
-	value, ok := os.LookupEnv(key)
-	return value, ok
-}
-```
-
-Then:
-
-```go
-interpolator := winterpolate.New(osEnv{})
+env := winterpolate.NewSliceEnv(os.Environ())
+interpolator := winterpolate.New(env)
 ```
 
 The important distinction is:
 
 > `winterpolate` performs interpolation. The caller decides where variable values come from.
 
-This is especially useful for applications that combine environment variables with application-specific variables.
+The package itself does not call `os.Getenv` or read `os.Environ`.
 
 ---
 
@@ -357,15 +439,15 @@ The child process receives the argument containing the literal text:
 %USERPROFILE%\app\log.txt
 ```
 
-The fact that `USERPROFILE` exists in the process environment does not mean that `%USERPROFILE%` will automatically be expanded inside every argument.
+The fact that `USERPROFILE` exists in the process environment does not mean that `%USERPROFILE%` is automatically expanded inside every argument.
 
-Therefore, if the application configuration contains:
+Therefore, if application configuration contains:
 
 ```text
 %USERPROFILE%\app\log.txt
 ```
 
-the application should explicitly interpolate it before passing the resulting argument to the executable:
+the application should explicitly interpolate it before passing the argument to the executable:
 
 ```text
 %USERPROFILE%\app\log.txt
@@ -373,11 +455,25 @@ the application should explicitly interpolate it before passing the resulting ar
 C:\Users\runner\app\log.txt
 ```
 
-`winterpolate` is intended to perform exactly this interpolation step.
+For example:
+
+```go
+env := winterpolate.NewSliceEnv(os.Environ())
+interpolator := winterpolate.New(env)
+
+logPath, err := interpolator.Interpolate(
+	`%USERPROFILE%\app\log.txt`,
+)
+if err != nil {
+	return err
+}
+
+cmd := exec.Command("myapp.exe", logPath)
+```
 
 ---
 
-## Escaping and literals
+## Literals and malformed expressions
 
 A lone `$` or `%` does not automatically constitute a variable.
 
@@ -404,7 +500,7 @@ Command-like expressions such as:
 $(echo hello)
 ```
 
-are also not treated as POSIX variables.
+are not treated as POSIX variables.
 
 Malformed interpolation expressions such as an unterminated:
 
@@ -427,7 +523,7 @@ if err != nil {
 }
 ```
 
-Unknown variables are controlled by `Strict` mode.
+Unknown variables are controlled by `Strict`.
 
 In non-strict mode:
 
@@ -461,7 +557,7 @@ Syntax errors remain errors regardless of strict mode.
 
 ### It does not
 
-* read the operating system environment
+* read the operating system environment automatically
 * recursively resolve variables
 * evaluate shell expressions
 * execute commands
@@ -483,6 +579,8 @@ The test suite covers:
 * mixed variable syntaxes
 * Windows paths
 * backslashes around variables
+* `NewMapEnv`
+* `NewSliceEnv`
 * missing variables
 * strict mode
 * malformed expressions
@@ -493,7 +591,7 @@ The test suite covers:
 * variable-name parsing
 * literal `$` and `%` characters
 
-The project can be tested with:
+Run the tests with:
 
 ```bash
 go test ./...
@@ -509,6 +607,9 @@ go test -v ./...
 
 ## License
 
-See the repository license for details.
+
+Copyright (c) 2026
+
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
 
 ---
