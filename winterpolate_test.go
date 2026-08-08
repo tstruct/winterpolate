@@ -1060,3 +1060,24 @@ func TestMapEnv_Nil(t *testing.T) {
 		t.Fatal("Get() ok = true, want false")
 	}
 }
+
+func TestInterpolate_DoubleDollarIsNotEscape(t *testing.T) {
+	t.Parallel()
+
+	env := winterpolate.NewMapEnv(map[string]string{
+		"USER": "runner",
+	})
+
+	interpolator := winterpolate.New(env)
+
+	got, err := interpolator.Interpolate(`Hello $$USER!`)
+	if err != nil {
+		t.Fatalf("Interpolate() error = %v", err)
+	}
+
+	want := `Hello $runner!`
+
+	if got != want {
+		t.Fatalf("Interpolate() = %q, want %q", got, want)
+	}
+}
