@@ -21,3 +21,18 @@ type RecursiveVariableError struct {
 func (e *RecursiveVariableError) Error() string {
 	return fmt.Sprintf("recursive variable expansion involving %q", e.Name)
 }
+
+// InterpolationError indicates malformed variable syntax.
+type InterpolationError struct {
+	Input string
+	Pos   int
+	Msg   string
+}
+
+func (e *InterpolationError) Error() string {
+	return fmt.Sprintf(
+		"interpolation error at position %d: %s",
+		e.Pos,
+		e.Msg,
+	)
+}

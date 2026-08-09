@@ -36,6 +36,9 @@ The package provides ready-to-use `Env` implementations for maps and environment
 * No recursive interpolation
 * One interpolation pass per `Interpolate` call
 * Deterministic behavior
+* CI/CD-compatible `$$` escaping
+* PowerShell-style backtick escaping for `%VAR%`
+* Backslashes are never treated as escape characters
 * Small `Env` interface
 * Suitable as a building block for higher-level variable resolution
 
@@ -256,6 +259,171 @@ C:\Users\runner\app\log.txt
 
 This is important when interpolating Windows file paths and executable arguments.
 
+A backslash before a variable does not prevent interpolation:
+
+```text
+\$USER
+```
+
+becomes:
+
+```text
+\runner
+```
+
+Similarly:
+
+```text
+\${USER}
+```
+
+becomes:
+
+```text
+\runner
+```
+
+The backslash itself is preserved.
+
+---
+
+## Escaping
+
+### `$$`
+
+Two dollar signs collapse into one literal dollar sign:
+
+```text
+$$USER
+```
+
+becomes:
+
+```text
+$USER
+```
+
+The resulting `$USER` is **not interpolated again during the same call**.
+
+This is useful when a higher-level CI/CD system or another processing layer uses `$` as its own macro syntax.
+
+Multiple dollar signs follow the same rule:
+
+```text
+$$USER       → $USER
+$$$USER      → $$USER
+$$$$USER     → $$$USER
+```
+
+The same applies to braced variables:
+
+```text
+$${USER}     → ${USER}
+$$${USER}    → $${USER}
+```
+
+`$$` is therefore an escaping mechanism, not another interpolation pass.
+
+### Backtick and `%VAR%`
+
+A backtick can be used to prevent a Windows-style `%VAR%` expression from being interpolated:
+
+```text
+`%HOST%
+```
+
+becomes:
+
+```text
+%HOST%
+```
+
+Exactly one backtick is consumed.
+
+For example:
+
+```text
+``%HOST%
+```
+
+becomes:
+
+```text
+`%HOST%
+```
+
+and:
+
+````text
+```%HOST%
+````
+
+becomes:
+
+```text
+``%HOST%
+```
+
+Backticks are intentionally used only for `%VAR%` expressions.
+
+They do not escape POSIX-style variables:
+
+```text
+`$HOST
+```
+
+is still interpreted as:
+
+```text
+`runner
+```
+
+Likewise:
+
+```text
+`${HOST}
+```
+
+becomes:
+
+```text
+`runner
+```
+
+### Backslashes
+
+Backslashes have no special meaning to `winterpolate`.
+
+They are preserved as-is and are never treated as escape characters.
+
+This behavior is intentional because backslashes are fundamental to Windows paths.
+
+For example:
+
+```text
+C:\Users\$HOST\app
+```
+
+becomes:
+
+```text
+C:\Users\runner\app
+```
+
+The same applies to braced variables:
+
+```text
+C:\Users\${HOST}\app
+```
+
+becomes:
+
+```text
+C:\Users\runner\app
+```
+
+A backslash does not suppress variable interpolation.
+
 ---
 
 ## One-pass interpolation
@@ -330,7 +498,7 @@ result, err := interpolator.Interpolate(`Hello $UNKNOWN`)
 The result is:
 
 ```text
-Hello
+Hello 
 ```
 
 Strict mode can be enabled when unknown variables should be treated as errors:
@@ -471,6 +639,8 @@ if err != nil {
 cmd := exec.Command("myapp.exe", logPath)
 ```
 
+This keeps variable resolution explicit and independent from process execution.
+
 ---
 
 ## Literals and malformed expressions
@@ -492,7 +662,7 @@ Likewise:
 %USER
 ```
 
-are not treated as valid `%VAR%` expressions.
+are not valid `%VAR%` expressions.
 
 Command-like expressions such as:
 
@@ -502,7 +672,7 @@ $(echo hello)
 
 are not treated as POSIX variables.
 
-Malformed interpolation expressions such as an unterminated:
+Malformed interpolation expressions, such as an unterminated:
 
 ```text
 ${USER
@@ -520,6 +690,21 @@ Interpolation errors are returned by `Interpolate`:
 result, err := interpolator.Interpolate(input)
 if err != nil {
 	// handle interpolation error
+}
+```
+
+Malformed expressions return an `*InterpolationError`.
+
+For example:
+
+```go
+result, err := interpolator.Interpolate(`${USER`)
+
+if err != nil {
+	var interpolationErr *winterpolate.InterpolationError
+	if errors.As(err, &interpolationErr) {
+		// handle malformed interpolation
+	}
 }
 ```
 
@@ -579,6 +764,8 @@ The test suite covers:
 * mixed variable syntaxes
 * Windows paths
 * backslashes around variables
+* `$` escaping with `$$`
+* backtick escaping for `%VAR%`
 * `NewMapEnv`
 * `NewSliceEnv`
 * missing variables
@@ -607,9 +794,6 @@ go test -v ./...
 
 ## License
 
-
 Copyright (c) 2026
 
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
-
----
+This project is licensed under the MIT License. See the LICENSE file for details.

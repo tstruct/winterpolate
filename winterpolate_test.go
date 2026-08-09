@@ -787,23 +787,105 @@ func TestMapEnv_Nil(t *testing.T) {
 	}
 }
 
-func TestInterpolate_DoubleDollarIsNotEscape(t *testing.T) {
+func TestInterpolate_Escaping(t *testing.T) {
 	t.Parallel()
 
 	env := winterpolate.NewMapEnv(map[string]string{
-		"USER": "runner",
+		"HOST": "runner",
 	})
 
 	interpolator := winterpolate.New(env)
 
-	got, err := interpolator.Interpolate(`Hello $$USER!`)
-	if err != nil {
-		t.Fatalf("Interpolate() error = %v", err)
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+
+		{
+			name: "percent variable",
+			in:   `%HOST%`,
+			want: "runner",
+		},
+		{
+			name: "backtick escapes percent variable",
+			in:   "`%HOST%",
+			want: "%HOST%",
+		},
+		{
+			name: "double backtick consumes one backtick",
+			in:   "``%HOST%",
+			want: "`%HOST%",
+		},
+		{
+			name: "triple backtick consumes one backtick",
+			in:   "```%HOST%",
+			want: "``%HOST%",
+		},
+		{
+			name: "double dollar consumes one dollar",
+			in:   `$$HOST`,
+			want: "$HOST",
+		},
+		{
+			name: "triple dollar consumes one dollar",
+			in:   `$$$HOST`,
+			want: "$$HOST",
+		},
+		{
+			name: "double dollar with braces",
+			in:   `$${HOST}`,
+			want: "${HOST}",
+		},
+		{
+			name: "triple dollar with braces",
+			in:   `$$${HOST}`,
+			want: "$${HOST}",
+		},
+		{
+			name: "backtick escapes percent variable",
+			in:   "`%HOST%",
+			want: "%HOST%",
+		},
+		{
+			name: "triple backtick leaves two backticks before percent variable",
+			in:   "```%HOST%",
+			want: "``%HOST%",
+		},
+		{
+			name: "backslash does not escape dollar",
+			in:   `\$HOST`,
+			want: `\runner`,
+		},
+		{
+			name: "backslash before braced variable is preserved",
+			in:   `\${HOST}`,
+			want: `\runner`,
+		},
+		{
+			name: "Windows path with dollar variable",
+			in:   `C:\Users\$HOST\app`,
+			want: `C:\Users\runner\app`,
+		},
+		{
+			name: "Windows path with braced variable",
+			in:   `C:\Users\${HOST}\app`,
+			want: `C:\Users\runner\app`,
+		},
 	}
 
-	want := `Hello $runner!`
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	if got != want {
-		t.Fatalf("Interpolate() = %q, want %q", got, want)
+			got, err := interpolator.Interpolate(tt.in)
+			if err != nil {
+				t.Fatalf("Interpolate() error = %v", err)
+			}
+
+			if got != tt.want {
+				t.Fatalf("Interpolate() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }

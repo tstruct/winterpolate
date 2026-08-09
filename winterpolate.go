@@ -47,15 +47,21 @@ func NewWithOptions(env Env, options Options) *Interpolator {
 //	${VAR}
 //	%VAR%
 //
-// Variable names consist of letters, digits and underscores,
-// but cannot start with a digit.
+// Escaping:
+//
+//	$$VAR     -> $VAR
+//	$${VAR}   -> ${VAR}
+//	`%VAR%    -> %VAR%
+//
+// Escaping is handled during the current interpolation pass.
+// The resulting literal text is not interpolated again.
+//
+// A backslash has no special meaning to the interpolator and is
+// preserved as-is. This is important for Windows paths.
 //
 // Interpolation is performed exactly once. If a resolved value
 // contains another variable reference, that reference is not
 // expanded by this call.
-//
-// A backslash has no special meaning to the interpolator and is
-// preserved as-is. This is important for Windows paths.
 func (i *Interpolator) Interpolate(s string) (string, error) {
 	var result strings.Builder
 	result.Grow(len(s))
@@ -63,24 +69,68 @@ func (i *Interpolator) Interpolate(s string) (string, error) {
 	for pos := 0; pos < len(s); {
 		switch s[pos] {
 		case '$':
-			name, end, ok, err := parseDollarVariable(s, pos)
-			if err != nil {
-				return "", err
+			count := 1
+			for pos+count < len(s) && s[pos+count] == '$' {
+				count++
 			}
 
-			if !ok {
-				result.WriteByte(s[pos])
-				pos++
+			if count == 1 {
+				name, end, ok, err := parseDollarVariable(s, pos)
+				if err != nil {
+					return "", err
+				}
+
+				if !ok {
+					result.WriteByte('$')
+					pos++
+					continue
+				}
+
+				value, err := i.lookup(name)
+				if err != nil {
+					return "", err
+				}
+
+				result.WriteString(value)
+				pos = end
 				continue
 			}
 
-			value, err := i.lookup(name)
-			if err != nil {
-				return "", err
+			// Two or more consecutive '$' are escaping.
+			// Consume exactly one '$' from the sequence and leave
+			// the remaining dollars as literal text.
+			result.WriteString(strings.Repeat("$", count-1))
+			pos += count
+
+		case '`':
+			// A backtick is an escape character only for
+			// percent-style variables.
+			//
+			// `%VAR% -> %VAR%
+			//
+			// Only the backtick is consumed. The resulting
+			// %VAR% expression is literal and must not be
+			// interpreted again during this pass.
+			if pos+1 < len(s) && s[pos+1] == '%' {
+				end := strings.IndexByte(s[pos+2:], '%')
+				if end < 0 {
+					return "", &InterpolationError{
+						Input: s,
+						Pos:   pos,
+						Msg:   "unterminated escaped %...% expression",
+					}
+				}
+
+				end += pos + 2
+
+				result.WriteString(s[pos+1 : end+1])
+				pos = end + 1
+				continue
 			}
 
-			result.WriteString(value)
-			pos = end
+			// Backtick has no special meaning otherwise.
+			result.WriteByte(s[pos])
+			pos++
 
 		case '%':
 			name, end, ok, err := parsePercentVariable(s, pos)
@@ -130,27 +180,6 @@ func (i *Interpolator) lookup(name string) (string, error) {
 	}
 
 	return "", nil
-}
-
-// UndefinedVariableError indicates that a referenced variable was
-// not found in Env while strict mode was enabled.
-// type UndefinedVariableError struct {
-// 	Name string
-// }
-
-// func (e *UndefinedVariableError) Error() string {
-// 	return fmt.Sprintf("undefined variable %q", e.Name)
-// }
-
-// InterpolationError indicates malformed variable syntax.
-type InterpolationError struct {
-	Input string
-	Pos   int
-	Msg   string
-}
-
-func (e *InterpolationError) Error() string {
-	return fmt.Sprintf("interpolation error at position %d: %s", e.Pos, e.Msg)
 }
 
 func parseDollarVariable(
